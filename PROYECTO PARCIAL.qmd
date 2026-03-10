@@ -1,0 +1,169 @@
+---
+title: "PROYECTO PARCIAL"
+author: "Cristian Jaime Almaguer"
+format: html
+editor: visual
+---
+
+## Cargamos Datos
+
+En este chunk, cargaremos nuestra base de datos, y realizaremos la serie de tiempo de las remesas, tambien aplicaremos logaritmo natural y consecuentemente una diferenciacion al logaritmo, por ultimo ploteamos 3 gráficas.
+
+```{r}
+# Carga
+REMESAS <- read.csv("C:/Users/IDEAPAD Slim 3/OneDrive/Documentos/remesas_mexico.csv")
+remesas_ts <- ts(
+  data = REMESAS$remesas_total,
+  frequency = 12,
+  start = c(1995, 1)
+)
+
+log_remesas_ts <- log(remesas_ts)
+diff_log_remesas_ts <- diff(log_remesas_ts)
+
+plot(remesas_ts,main = "Remesas Familiares Mexico (Total)")
+plot(log_remesas_ts,main = "Log(Remesas)")
+plot(diff_log_remesas_ts,main = "Diff(Log(Remesas))")
+```
+
+##  Aqui se realizará la prueba de Dickey - Fuller Aumentanta tanto a nuestra serie original como a la serie diferenciada
+
+```{r}
+library(tseries)
+# Prueba en la serie original
+adf.test(remesas_ts)
+# Prueba en la serie diferenciada
+adf.test(diff_log_remesas_ts)
+```
+
+## Graficas ACF Y PACF para determinar p y q
+
+```{r}
+# Sobre la serie diferenciada (ya estacionaria)
+acf(diff_log_remesas_ts,  lag.max = 24, main = "ACF - Diff(Log(Remesas))")
+pacf(diff_log_remesas_ts, lag.max = 24, main = "PACF - Diff(Log(Remesas))")
+```
+
+## Usamos auto.arima para buscar el mejor SARIMA automaticamente
+
+```{r}
+library(forecast)
+modelo <- auto.arima(log_remesas_ts,seasonal = TRUE, 
+                         stepwise      = FALSE,
+                     approximation = FALSE)
+                    
+              
+summary(modelo)
+autoplot(modelo)
+```
+
+## Realizamos el pronostico en la serie logaritmica 
+
+```{r}
+
+# Gráfica de residuos
+plot(resid(modelo), main = "Residuos del modelo SARIMA", ylab = "Residuos")
+
+# Predicción (12 meses hacia adelante)
+prediccion <- forecast(modelo, h = 12)
+print(prediccion)
+plot(prediccion, main = "Pronóstico de Remesas (12 meses)")
+```
+
+## Checamos residuos con pruebas de Ljung-Box y Shapiro Wilk
+
+```{r}
+# Diagnóstico visual completo
+checkresiduals(modelo)
+
+# Prueba Ljung-Box (residuos deben ser ruido blanco, p > 0.05)
+Box.test(modelo$residuals, lag = 24, type = "Ljung-Box")
+
+# Normalidad de residuos (idealmente p > 0.05)
+shapiro.test(modelo$residuals)
+```
+
+## Realizamos el pronostico a 12 meses con la serie en MDD, con intervalos de confianza de 80% y 95%
+
+```{r}
+prediccion <- forecast(modelo, h = 12)
+
+plot(exp(prediccion$x),
+     main = "Remesas Familiares México - Histórico y Pronóstico",
+     ylab = "Millones de USD",
+     xlab = "Tiempo",
+     xlim = c(1995, 2027),
+     ylim = c(0, 8000),
+     col  = "black",
+     lwd  = 1)
+
+lines(exp(prediccion$lower[,2]), col = "red", lwd = 2)
+lines(exp(prediccion$upper[,2]), col = "red", lwd = 2)
+
+lines(exp(prediccion$lower[,1]), col = "green", lwd = 2)
+lines(exp(prediccion$upper[,1]), col = "green", lwd = 2)
+
+lines(exp(prediccion$mean), col = "blue", lwd = 2)
+
+legend("topleft",
+       legend = c("Histórico", "Pronóstico", "IC 80%", "IC 95%"),
+       col    = c("black", "blue", "green", "red"),
+       lwd    = 2)
+```
+
+## Comparamos los ultimos 3 años del ingreso de remesas.
+
+```{r}
+# Extraer valores numéricos de cada año
+remesas_2023 <- as.numeric(window(remesas_ts, start = c(2023, 1), end = c(2023, 12)))
+remesas_2024 <- as.numeric(window(remesas_ts, start = c(2024, 1), end = c(2024, 12)))
+remesas_2025 <- as.numeric(window(remesas_ts, start = c(2025, 1), end = c(2025, 12)))
+
+# Meses en el eje X
+meses <- 1:12
+
+# Graficar 2023
+plot(meses, remesas_2023,
+     main = "Comparación de Remesas: 2023, 2024 y 2025",
+     ylab = "Millones de USD",
+     xlab = "Mes",
+     col  = "steelblue",
+     lwd  = 2,
+     type = "l",
+     ylim = c(3500, 7000),
+     xaxt = "n")
+
+# Agregar 2024
+lines(meses, remesas_2024, col = "darkgreen", lwd = 2)
+
+# Agregar 2025
+lines(meses, remesas_2025, col = "red", lwd = 2)
+
+# Eje X con nombres de meses
+axis(1, at = 1:12,
+     labels = c("Ene","Feb","Mar","Abr","May","Jun",
+                "Jul","Ago","Sep","Oct","Nov","Dic"))
+
+# Leyenda
+legend("topright",
+       legend = c("2023", "2024", "2025"),
+       col    = c("steelblue", "darkgreen", "red"),
+       lty    = 1,
+       lwd    = 2)
+```
+
+## Realizamos pronostico por mes 
+
+```{r}
+prediccion <- forecast(modelo, h = 12)
+
+tabla_real <- data.frame(
+  Mes        = c("Feb 2026","Mar 2026","Abr 2026","May 2026",
+                 "Jun 2026","Jul 2026","Ago 2026","Sep 2026",
+                 "Oct 2026","Nov 2026","Dic 2026","Ene 2027"),
+  Pronostico = round(exp(prediccion$mean), 2),
+  Lo_95      = round(exp(prediccion$lower[,2]), 2),
+  Hi_95      = round(exp(prediccion$upper[,2]), 2)
+)
+print(tabla_real)
+```
