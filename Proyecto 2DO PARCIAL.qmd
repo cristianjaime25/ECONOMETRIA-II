@@ -1,0 +1,194 @@
+---
+title: "Proyecto Segundo Parcial"
+author: "Cristian Jaime Almaguer"
+format: html
+editor: visual
+---
+
+## Cargamos datos y generamos las series de tiempo
+
+```{r}
+
+library(forecast)
+library(tseries)
+library(vars)
+library(FinTS)
+library(rugarch)
+
+DATOS <- read.csv("datos_proyecto2.csv")
+
+remesas_ts    <- ts(DATOS$remesas,
+                   frequency = 12, start = c(1995, 1))
+
+tc_ts         <- ts(DATOS$tipo_cambio,
+                   frequency = 12, start = c(1995, 1))
+
+par(mfrow = c(2, 1))
+
+plot(remesas_ts,
+     main = "Remesas Familiares México (MDD)",
+     ylab = "Millones de USD",
+     col  = "blue", lwd = 1.5)
+
+plot(tc_ts,
+     main = "Tipo de Cambio Peso/Dólar",
+     ylab = "Pesos por Dólar",
+     col  = "red", lwd = 1.5)
+
+par(mfrow = c(1, 1))
+
+remesas_norm <- scale(remesas_ts)
+tc_norm      <- scale(tc_ts)
+
+plot(remesas_norm,
+     main = "Remesas vs Tipo de Cambio (normalizadas)",
+     ylab = "Valor estandarizado",
+     col  = "blue", lwd = 1.5,
+     ylim = c(-3, 3))
+
+lines(tc_norm, col = "red", lwd = 1.5)
+
+legend("topleft",
+       legend = c("Remesas", "Tipo de Cambio"),
+       col    = c("blue", "red"),
+       lwd    = 2)
+```
+
+## Pruebas de raices unitarias
+
+```{r}
+library(tseries)
+library(strucchange)
+
+
+cat("=== ADF - Remesas ===\n")
+adf.test(remesas_ts)
+
+cat("\n=== ADF - Tipo de Cambio ===\n")
+adf.test(tc_ts)
+
+cat("\n=== ADF - Diff(Remesas) ===\n")
+adf.test(diff(remesas_ts))
+
+cat("\n=== ADF - Diff(Tipo de Cambio) ===\n")
+adf.test(diff(tc_ts))
+
+cat("\n=== Zivot-Andrews - Remesas ===\n")
+za_remesas <- ur.za(remesas_ts, model = "both", lag = 12)
+summary(za_remesas)
+plot(za_remesas)
+
+cat("\n=== Zivot-Andrews - Tipo de Cambio ===\n")
+za_tc <- ur.za(tc_ts, model = "both", lag = 12)
+summary(za_tc)
+plot(za_tc)
+
+```
+
+```{r}
+
+cat("Quiebre Remesas — posición 166:\n")
+print(DATOS$fecha[166])
+
+cat("Quiebre Tipo de Cambio — posición 246:\n")
+print(DATOS$fecha[246])
+```
+
+## Causalidad de Granger
+
+```{r}
+# Series diferenciadas
+diff_remesas <- diff(remesas_ts)
+diff_tc      <- diff(tc_ts)
+
+# Unir en matriz para VAR
+datos_var <- cbind(diff_remesas, diff_tc)
+colnames(datos_var) <- c("remesas", "tipo_cambio")
+
+# Selección de rezagos óptimos
+lag_select <- VARselect(datos_var, lag.max = 12, type = "const")
+print(lag_select$selection)
+
+# Causalidad de Granger
+# ¿El tipo de cambio causa las remesas?
+cat("\n=== ¿Tipo de cambio causa remesas? ===\n")
+grangertest(diff_remesas ~ diff_tc, order = lag_select$selection[1])
+
+# ¿Las remesas causan el tipo de cambio?
+cat("\n=== ¿Remesas causan tipo de cambio? ===\n")
+grangertest(diff_tc ~ diff_remesas, order = lag_select$selection[1])
+```
+
+## Modelo VAR
+
+```{r}
+# Estimar VAR con 12 rezagos
+var_modelo <- VAR(datos_var, p = 12, type = "const")
+summary(var_modelo)
+
+# Análisis impulso-respuesta
+# ¿Cómo responden las remesas ante un shock en el tipo de cambio?
+irf_tc_rem <- irf(var_modelo,
+                  impulse  = "tipo_cambio",
+                  response = "remesas",
+                  n.ahead  = 24,
+                  boot     = TRUE)
+plot(irf_tc_rem,
+     main = "Respuesta de Remesas ante shock en Tipo de Cambio")
+
+# ¿Cómo responde el tipo de cambio ante un shock en remesas?
+irf_rem_tc <- irf(var_modelo,
+                  impulse  = "remesas",
+                  response = "tipo_cambio",
+                  n.ahead  = 24,
+                  boot     = TRUE)
+plot(irf_rem_tc,
+     main = "Respuesta de Tipo de Cambio ante shock en Remesas")
+
+# Descomposición de varianza
+fevd_resultado <- fevd(var_modelo, n.ahead = 24)
+plot(fevd_resultado)
+```
+
+## ARCH/GARCH
+
+```{r}
+library(FinTS)
+library(rugarch)
+
+
+residuos_remesas <- residuals(var_modelo)[, "remesas"]
+residuos_tc      <- residuals(var_modelo)[, "tipo_cambio"]
+
+cat("=== Prueba ARCH — Residuos Remesas ===\n")
+ArchTest(residuos_remesas, lags = 12)
+
+cat("\n=== Prueba ARCH — Residuos Tipo de Cambio ===\n")
+ArchTest(residuos_tc, lags = 12)
+```
+
+## Aplicamos GARCH solo a las remesas.
+
+```{r}
+
+spec_garch <- ugarchspec(
+  variance.model = list(model = "sGARCH",
+                        garchOrder = c(1, 1)),
+  mean.model     = list(armaOrder = c(0, 0),
+                        include.mean = TRUE),
+  distribution.model = "norm"
+)
+
+garch_modelo <- ugarchfit(spec  = spec_garch,
+                          data  = residuos_remesas)
+
+#
+show(garch_modelo)
+
+par(mfrow = c(2, 2))
+plot(garch_modelo, which = 1)  # Serie y volatilidad
+plot(garch_modelo, which = 3)  # Volatilidad condicional
+plot(garch_modelo, which = 9)  # QQ-plot residuos
+plot(garch_modelo, which = 10) # ACF residuos estandarizados
+par(mfrow = c(1, 1))
+```
